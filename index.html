@@ -2,7 +2,7 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8" />
-<title>דשבורד אופציות – Yahoo Finance</title>
+<title>דשבורד אופציות – Yahoo Finance + Proxy</title>
 <style>
 body { font-family: Arial; background:#050816; color:#f5f5f5; padding:20px; }
 h1,h2 { text-align:center; }
@@ -21,7 +21,7 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
 
 <body>
 <h1>דשבורד אופציות CALL – HV/IV</h1>
-<h2>נתונים מ‑Yahoo Finance (חינם)</h2>
+<h2>Yahoo Finance דרך פרוקסי (חינם)</h2>
 
 <div class="controls">
   <div>
@@ -67,13 +67,16 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
 </table>
 
 <script>
+// ===== פרוקסי לעקיפת CORS =====
+const PROXY = "https://corsproxy.io/?";
+
 // ===== רשימות מדדים =====
 const SP500 = [
-"AAPL","MSFT","AMZN","META","GOOGL","GOOG","NVDA","TSLA","JPM","V","MA","HD","PG","XOM","CVX"
+  "AAPL","MSFT","AMZN","META","GOOGL","GOOG","NVDA","TSLA","JPM","V","MA","HD","PG","XOM","CVX"
 ];
 
 const NASDAQ100 = [
-"AAPL","MSFT","AMZN","META","GOOGL","NVDA","TSLA","PEP","AVGO","COST","ADBE","CSCO","AMD","QCOM","TXN"
+  "AAPL","MSFT","AMZN","META","GOOGL","NVDA","TSLA","PEP","AVGO","COST","ADBE","CSCO","AMD","QCOM","TXN"
 ];
 
 function getUniverse() {
@@ -82,35 +85,67 @@ function getUniverse() {
 }
 
 // ===== חישובי HV =====
-function calcLogReturns(p){ let r=[]; for(let i=1;i<p.length;i++) r.push(Math.log(p[i]/p[i-1])); return r; }
-function calcStd(a){ let m=a.reduce((x,y)=>x+y)/a.length; return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/(a.length-1)); }
-function calcHV(p){ return calcStd(calcLogReturns(p)) * Math.sqrt(252); }
+function calcLogReturns(p){
+  let r=[];
+  for(let i=1;i<p.length;i++) {
+    if (!p[i-1] || !p[i]) continue;
+    r.push(Math.log(p[i]/p[i-1]));
+  }
+  return r;
+}
+function calcStd(a){
+  if(a.length < 2) return null;
+  let m=a.reduce((x,y)=>x+y,0)/a.length;
+  return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/(a.length-1));
+}
+function calcHV(p){
+  const rets = calcLogReturns(p);
+  const s = calcStd(rets);
+  if(!s) return null;
+  return s * Math.sqrt(252);
+}
 function days(a,b){ return Math.round((b-a)/(1000*60*60*24)); }
 
-// ===== API =====
+// ===== API דרך פרוקסי =====
 async function fetchHistory(sym){
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1y&interval=1d`;
+    const url = PROXY + encodeURIComponent(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1y&interval=1d`
+    );
     const r = await fetch(url);
     const d = await r.json();
     return d.chart.result[0].indicators.quote[0].close;
-  } catch { return null; }
+  } catch (e) {
+    console.error("history error", sym, e);
+    return null;
+  }
 }
 
 async function fetchOptions(sym){
   try {
-    const url = `https://query1.finance.yahoo.com/v7/finance/options/${sym}`;
+    const url = PROXY + encodeURIComponent(
+      `https://query1.finance.yahoo.com/v7/finance/options/${sym}`
+    );
     const r = await fetch(url);
     return await r.json();
-  } catch { return null; }
+  } catch (e) {
+    console.error("options error", sym, e);
+    return null;
+  }
 }
 
 async function fetchQuote(sym){
   try {
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${sym}`;
+    const url = PROXY + encodeURIComponent(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${sym}`
+    );
     const r = await fetch(url);
-    return r.json().then(x => x.quoteResponse.result[0].regularMarketPrice);
-  } catch { return null; }
+    const d = await r.json();
+    return d.quoteResponse.result[0].regularMarketPrice;
+  } catch (e) {
+    console.error("quote error", sym, e);
+    return null;
+  }
 }
 
 // ===== MAIN =====
@@ -127,19 +162,33 @@ async function build(){
   const out = [];
 
   for(const t of universe){
+    console.log("Processing", t);
+
     const prices = await fetchHistory(t);
     const spot = await fetchQuote(t);
 
-    if(!prices || !spot) continue;
+    if(!prices || !spot) {
+      console.warn("Skipping", t, "no prices or spot");
+      continue;
+    }
 
     const hv = calcHV(prices);
-    if(!hv || hv < minHv) continue;
+    if(!hv || hv < minHv) {
+      console.warn("Skipping", t, "HV too low or invalid", hv);
+      continue;
+    }
 
     const chain = await fetchOptions(t);
-    if(!chain || !chain.optionChain || !chain.optionChain.result) continue;
+    if(!chain || !chain.optionChain || !chain.optionChain.result) {
+      console.warn("Skipping", t, "no optionChain");
+      continue;
+    }
 
     const result = chain.optionChain.result[0];
-    if(!result.options || !result.options.length) continue;
+    if(!result.options || !result.options.length) {
+      console.warn("Skipping", t, "no options blocks");
+      continue;
+    }
 
     for(const blk of result.options){
       const exp = new Date(blk.expirationDate * 1000);
@@ -159,7 +208,7 @@ async function build(){
         const score = hv - iv;
         const atm = Math.abs(opt.strike - spot);
 
-        // חישוב break-even %
+        // % to break even = (Strike + Premium) / Spot - 1
         const breakeven = (opt.strike + opt.lastPrice) / spot - 1;
 
         out.push({
@@ -178,7 +227,13 @@ async function build(){
   out.sort((a,b)=> b.score - a.score);
 
   tbody.innerHTML = "";
+  if(out.length === 0){
+    tbody.innerHTML = "<tr><td colspan='12'>לא נמצאו אופציות שעומדות בתנאים.</td></tr>";
+    return;
+  }
+
   for(const r of out){
+    const beClass = r.breakeven < 0.15 ? "be-good" : "be-bad"; // פחות מ‑15% ירוק, אחרת אדום
     tbody.innerHTML += `
       <tr>
         <td>${r.t}</td>
@@ -191,7 +246,7 @@ async function build(){
         <td>${r.days}</td>
         <td>${r.hv.toFixed(3)}</td>
         <td>${r.iv.toFixed(3)}</td>
-        <td class="${r.breakeven < 0.15 ? 'be-good' : 'be-bad'}">${(r.breakeven*100).toFixed(2)}%</td>
+        <td class="${beClass}">${(r.breakeven*100).toFixed(2)}%</td>
         <td class="${r.score>=0?'score-positive':'score-negative'}">${r.score.toFixed(3)}</td>
       </tr>`;
   }
