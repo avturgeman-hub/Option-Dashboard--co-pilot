@@ -31,19 +31,14 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
   </div>
 
   <div>
-    <label>מספר אופציות להצגה:</label>
-    <input type="number" id="limit" value="30" min="5" max="500" />
-  </div>
-
-  <div>
     <label>מינימום HV:</label>
-    <input type="number" id="minHv" value="0.25" step="0.05" />
+    <input type="number" id="minHv" value="0.10" step="0.05" />
   </div>
 
   <div>
     <label>טווח פקיעה (חודשים):</label>
-    <input type="number" id="minMonths" value="4" step="1" style="width:60px;" /> -
-    <input type="number" id="maxMonths" value="8" step="1" style="width:60px;" />
+    <input type="number" id="minMonths" value="1" step="1" style="width:60px;" /> -
+    <input type="number" id="maxMonths" value="12" step="1" style="width:60px;" />
   </div>
 
   <button id="refreshBtn">רענן</button>
@@ -74,7 +69,6 @@ const FINNHUB_API_KEY = "d8et591r01qub7keo0dgd8et591r01qub7keo0e0";
 const BASE = "https://finnhub.io/api/v1";
 
 // ===== רשימות מדדים =====
-// (רשימות מקוצרות — אפשר להרחיב בקלות)
 const SP500 = [
 "AAPL","MSFT","AMZN","META","GOOGL","GOOG","BRK.B","NVDA","TSLA","UNH","XOM","JPM","JNJ","V","PG","MA","HD","CVX","ABBV","PFE"
 ];
@@ -96,23 +90,29 @@ function days(a,b){ return Math.round((b-a)/(1000*60*60*24)); }
 
 // ===== API =====
 async function fetchCandles(sym){
-  const now = Math.floor(Date.now()/1000);
-  const from = now - 252*24*60*60;
-  const url = `${BASE}/stock/candle?symbol=${sym}&resolution=D&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
-  const r = await fetch(url);
-  const d = await r.json();
-  if(d.s !== "ok") throw 0;
-  return d.c;
+  try {
+    const now = Math.floor(Date.now()/1000);
+    const from = now - 252*24*60*60;
+    const url = `${BASE}/stock/candle?symbol=${sym}&resolution=D&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if(d.s !== "ok") return null;
+    return d.c;
+  } catch { return null; }
 }
 
 async function fetchQuote(sym){
-  const r = await fetch(`${BASE}/quote?symbol=${sym}&token=${FINNHUB_API_KEY}`);
-  return (await r.json()).c;
+  try {
+    const r = await fetch(`${BASE}/quote?symbol=${sym}&token=${FINNHUB_API_KEY}`);
+    return (await r.json()).c;
+  } catch { return null; }
 }
 
 async function fetchChain(sym){
-  const r = await fetch(`${BASE}/stock/option-chain?symbol=${sym}&token=${FINNHUB_API_KEY}`);
-  return await r.json();
+  try {
+    const r = await fetch(`${BASE}/stock/option-chain?symbol=${sym}&token=${FINNHUB_API_KEY}`);
+    return await r.json();
+  } catch { return null; }
 }
 
 // ===== MAIN =====
@@ -120,7 +120,6 @@ async function build(){
   const tbody = document.getElementById("optionsBody");
   tbody.innerHTML = "<tr><td colspan='11'>טוען...</td></tr>";
 
-  const limit = +document.getElementById("limit").value;
   const minHv = +document.getElementById("minHv").value;
   const minM = +document.getElementById("minMonths").value;
   const maxM = +document.getElementById("maxMonths").value;
@@ -130,18 +129,15 @@ async function build(){
   const out = [];
 
   for(const t of universe){
-    let prices, spot;
-    try { [prices, spot] = await Promise.all([fetchCandles(t), fetchQuote(t)]); }
-    catch { continue; }
+    const prices = await fetchCandles(t);
+    const spot = await fetchQuote(t);
+    if(!prices || !spot) continue;
 
     const hv = calcHV(prices);
     if(!hv || hv < minHv) continue;
 
-    let chain;
-    try { chain = await fetchChain(t); }
-    catch { continue; }
-
-    if(!chain.data) continue;
+    const chain = await fetchChain(t);
+    if(!chain || !chain.data) continue;
 
     for(const blk of chain.data){
       const exp = new Date(blk.expirationDate);
@@ -170,10 +166,9 @@ async function build(){
   }
 
   out.sort((a,b)=> b.score - a.score || a.atm - b.atm);
-  const top = out.slice(0, limit);
 
   tbody.innerHTML = "";
-  for(const r of top){
+  for(const r of out){
     tbody.innerHTML += `
       <tr>
         <td>${r.t}</td>
