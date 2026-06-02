@@ -2,7 +2,7 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8" />
-<title>דשבורד אופציות – HV/IV</title>
+<title>דשבורד אופציות – Yahoo Finance</title>
 <style>
 body { font-family: Arial; background:#050816; color:#f5f5f5; padding:20px; }
 h1,h2 { text-align:center; }
@@ -14,12 +14,14 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
 .badge-call { background:#1e88e5; padding:2px 6px; border-radius:4px; }
 .score-positive { color:#4caf50; font-weight:bold; }
 .score-negative { color:#f44336; font-weight:bold; }
+.be-good { color:#4caf50; font-weight:bold; }
+.be-bad { color:#f44336; font-weight:bold; }
 </style>
 </head>
 
 <body>
 <h1>דשבורד אופציות CALL – HV/IV</h1>
-<h2>נתונים מ‑Finnhub</h2>
+<h2>נתונים מ‑Yahoo Finance (חינם)</h2>
 
 <div class="controls">
   <div>
@@ -57,6 +59,7 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
 <th>ימים</th>
 <th>HV</th>
 <th>IV</th>
+<th>% to break even</th>
 <th>Score</th>
 </tr>
 </thead>
@@ -64,17 +67,13 @@ th,td { border-bottom:1px solid #333; padding:8px; text-align:center; }
 </table>
 
 <script>
-// ===== API KEY =====
-const FINNHUB_API_KEY = "d8et591r01qub7keo0dgd8et591r01qub7keo0e0";
-const BASE = "https://finnhub.io/api/v1";
-
 // ===== רשימות מדדים =====
 const SP500 = [
-"AAPL","MSFT","AMZN","META","GOOGL","GOOG","BRK.B","NVDA","TSLA","UNH","XOM","JPM","JNJ","V","PG","MA","HD","CVX","ABBV","PFE"
+"AAPL","MSFT","AMZN","META","GOOGL","GOOG","NVDA","TSLA","JPM","V","MA","HD","PG","XOM","CVX"
 ];
 
 const NASDAQ100 = [
-"AAPL","MSFT","AMZN","META","GOOGL","NVDA","TSLA","PEP","AVGO","COST","ADBE","CSCO","AMD","QCOM","TXN","AMGN","INTC","HON"
+"AAPL","MSFT","AMZN","META","GOOGL","NVDA","TSLA","PEP","AVGO","COST","ADBE","CSCO","AMD","QCOM","TXN"
 ];
 
 function getUniverse() {
@@ -89,36 +88,35 @@ function calcHV(p){ return calcStd(calcLogReturns(p)) * Math.sqrt(252); }
 function days(a,b){ return Math.round((b-a)/(1000*60*60*24)); }
 
 // ===== API =====
-async function fetchCandles(sym){
+async function fetchHistory(sym){
   try {
-    const now = Math.floor(Date.now()/1000);
-    const from = now - 252*24*60*60;
-    const url = `${BASE}/stock/candle?symbol=${sym}&resolution=D&from=${from}&to=${now}&token=${FINNHUB_API_KEY}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1y&interval=1d`;
     const r = await fetch(url);
     const d = await r.json();
-    if(d.s !== "ok") return null;
-    return d.c;
+    return d.chart.result[0].indicators.quote[0].close;
+  } catch { return null; }
+}
+
+async function fetchOptions(sym){
+  try {
+    const url = `https://query1.finance.yahoo.com/v7/finance/options/${sym}`;
+    const r = await fetch(url);
+    return await r.json();
   } catch { return null; }
 }
 
 async function fetchQuote(sym){
   try {
-    const r = await fetch(`${BASE}/quote?symbol=${sym}&token=${FINNHUB_API_KEY}`);
-    return (await r.json()).c;
-  } catch { return null; }
-}
-
-async function fetchChain(sym){
-  try {
-    const r = await fetch(`${BASE}/stock/option-chain?symbol=${sym}&token=${FINNHUB_API_KEY}`);
-    return await r.json();
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${sym}`;
+    const r = await fetch(url);
+    return r.json().then(x => x.quoteResponse.result[0].regularMarketPrice);
   } catch { return null; }
 }
 
 // ===== MAIN =====
 async function build(){
   const tbody = document.getElementById("optionsBody");
-  tbody.innerHTML = "<tr><td colspan='11'>טוען...</td></tr>";
+  tbody.innerHTML = "<tr><td colspan='12'>טוען...</td></tr>";
 
   const minHv = +document.getElementById("minHv").value;
   const minM = +document.getElementById("minMonths").value;
@@ -129,43 +127,55 @@ async function build(){
   const out = [];
 
   for(const t of universe){
-    const prices = await fetchCandles(t);
+    const prices = await fetchHistory(t);
     const spot = await fetchQuote(t);
+
     if(!prices || !spot) continue;
 
     const hv = calcHV(prices);
     if(!hv || hv < minHv) continue;
 
-    const chain = await fetchChain(t);
-    if(!chain || !chain.data) continue;
+    const chain = await fetchOptions(t);
+    if(!chain || !chain.optionChain || !chain.optionChain.result) continue;
 
-    for(const blk of chain.data){
-      const exp = new Date(blk.expirationDate);
+    const result = chain.optionChain.result[0];
+    if(!result.options || !result.options.length) continue;
+
+    for(const blk of result.options){
+      const exp = new Date(blk.expirationDate * 1000);
       const d = days(today, exp);
       const m = d / 30;
+
       if(m < minM || m > maxM) continue;
 
-      for(const opt of blk.options || []){
-        if(opt.type !== "CALL") continue;
-        if(!opt.strike || !opt.lastPrice || !opt.impliedVolatility) continue;
+      for(const opt of blk.calls || []){
+
+        // סינון קשיח — אם חסר נתון → דלג
+        if(!opt.strike) continue;
+        if(!opt.lastPrice) continue;
+        if(!opt.impliedVolatility) continue;
 
         const iv = opt.impliedVolatility;
         const score = hv - iv;
         const atm = Math.abs(opt.strike - spot);
 
+        // חישוב break-even %
+        const breakeven = (opt.strike + opt.lastPrice) / spot - 1;
+
         out.push({
           t, spot,
           strike: opt.strike,
           price: opt.lastPrice,
-          exp: blk.expirationDate,
+          exp: exp.toISOString().split("T")[0],
           days: d,
-          hv, iv, score, atm
+          hv, iv, score, atm,
+          breakeven
         });
       }
     }
   }
 
-  out.sort((a,b)=> b.score - a.score || a.atm - b.atm);
+  out.sort((a,b)=> b.score - a.score);
 
   tbody.innerHTML = "";
   for(const r of out){
@@ -181,6 +191,7 @@ async function build(){
         <td>${r.days}</td>
         <td>${r.hv.toFixed(3)}</td>
         <td>${r.iv.toFixed(3)}</td>
+        <td class="${r.breakeven < 0.15 ? 'be-good' : 'be-bad'}">${(r.breakeven*100).toFixed(2)}%</td>
         <td class="${r.score>=0?'score-positive':'score-negative'}">${r.score.toFixed(3)}</td>
       </tr>`;
   }
